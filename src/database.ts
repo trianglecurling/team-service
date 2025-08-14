@@ -25,13 +25,57 @@ export class DatabaseManager {
       CREATE TABLE IF NOT EXISTS contexts (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL UNIQUE,
-        type TEXT NOT NULL CHECK(type IN ('league', 'tournament')),
-        start_date TEXT NOT NULL,
-        end_date TEXT NOT NULL,
+        type TEXT NOT NULL CHECK(type IN ('league', 'tournament', 'miscellaneous')),
+        start_date TEXT,
+        end_date TEXT,
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         updated_at TEXT NOT NULL DEFAULT (datetime('now'))
       )
     `);
+
+    // If contexts table exists but doesn't include 'miscellaneous' in CHECK, migrate it
+    try {
+      const row = this.db.prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='contexts'`).get() as { sql?: string } | undefined;
+      const createSql = row?.sql || '';
+      if (createSql && !createSql.includes("'miscellaneous'")) {
+        // Migrate table to include new CHECK option
+        this.db.pragma('foreign_keys = OFF');
+        this.db.exec('BEGIN');
+        try {
+          // Create new table with desired schema
+          this.db.exec(`
+            CREATE TABLE contexts_new (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              name TEXT NOT NULL UNIQUE,
+              type TEXT NOT NULL CHECK(type IN ('league', 'tournament', 'miscellaneous')),
+              start_date TEXT,
+              end_date TEXT,
+              created_at TEXT NOT NULL DEFAULT (datetime('now')),
+              updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+          `);
+          // Copy data
+          this.db.exec(`
+            INSERT INTO contexts_new (id, name, type, start_date, end_date, created_at, updated_at)
+            SELECT id, name, type, start_date, end_date, created_at, updated_at FROM contexts;
+          `);
+          // Replace old table
+          this.db.exec('DROP TABLE contexts');
+          this.db.exec('ALTER TABLE contexts_new RENAME TO contexts');
+          // Recreate indexes
+          this.db.exec(`CREATE INDEX IF NOT EXISTS idx_contexts_name ON contexts(name);`);
+          this.db.exec('COMMIT');
+        } catch (e) {
+          this.db.exec('ROLLBACK');
+          throw e;
+        } finally {
+          this.db.pragma('foreign_keys = ON');
+        }
+      }
+    } catch (e) {
+      // If inspection or migration fails, rethrow to surface meaningful error
+      throw e;
+    }
 
     // Create teams table
     this.db.exec(`
@@ -72,14 +116,70 @@ export class DatabaseManager {
     return stmt.get(name) as Context | undefined;
   }
 
-  createContext(name: string, type: 'league' | 'tournament', startDate: string, endDate: string): Context {
+  createContext(name: string, type: 'league' | 'tournament' | 'miscellaneous', startDate?: string, endDate?: string): Context {
     const stmt = this.db.prepare(`
       INSERT INTO contexts (name, type, start_date, end_date)
       VALUES (?, ?, ?, ?)
     `);
-    const result = stmt.run(name, type, startDate, endDate);
+    const result = stmt.run(name, type, startDate ?? null, endDate ?? null);
     
     return this.getContextByName(name)!;
+  }
+
+  updateContext(currentName: string, updates: { name?: string; type?: 'league' | 'tournament' | 'miscellaneous'; startDate?: string; endDate?: string; }): Context {
+    const ctx = this.getContextByName(currentName);
+    if (!ctx) {
+      throw new Error('Context not found');
+    }
+
+    const fields: string[] = [];
+    const values: any[] = [];
+
+    if (updates.name !== undefined && updates.name !== ctx.name) {
+      // Ensure new name is not taken
+      const existing = this.getContextByName(updates.name);
+      if (existing) {
+        throw new Error('Another context with this name already exists');
+      }
+      fields.push('name = ?');
+      values.push(updates.name);
+    }
+    if (updates.type !== undefined) {
+      fields.push('type = ?');
+      values.push(updates.type);
+    }
+    if (updates.startDate !== undefined) {
+      fields.push('start_date = ?');
+      values.push(updates.startDate);
+    }
+    if (updates.endDate !== undefined) {
+      fields.push('end_date = ?');
+      values.push(updates.endDate);
+    }
+
+    if (fields.length === 0) {
+      return ctx; // nothing to update
+    }
+
+    fields.push("updated_at = datetime('now')");
+
+    const stmt = this.db.prepare(`
+      UPDATE contexts
+      SET ${fields.join(', ')}
+      WHERE name = ?
+    `);
+    values.push(currentName);
+    stmt.run(...values);
+
+    // If name changed, fetch by new name
+    const newName = updates.name || currentName;
+    return this.getContextByName(newName)!;
+  }
+
+  deleteContext(name: string): boolean {
+    const stmt = this.db.prepare('DELETE FROM contexts WHERE name = ?');
+    const result = stmt.run(name);
+    return result.changes > 0;
   }
 
   // Team operations
@@ -107,15 +207,15 @@ export class DatabaseManager {
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       context: {
-        id: row.context_id,
+        id: row.id,
         name: row.name,
         type: row.type,
         startDate: row.start_date,
         endDate: row.end_date,
-        createdAt: row.context_created_at,
-        updatedAt: row.context_updated_at
+        createdAt: row.created_at,
+        updatedAt: row.updated_at
       }
-    }));
+    })) as any;
   }
 
   getTeam(teamName: string, contextName: string): (Team & { context: Context }) | undefined {
@@ -257,7 +357,7 @@ export class DatabaseManager {
       values.push(updates.homeClub);
     }
 
-    updateFields.push('updated_at = datetime("now")');
+    updateFields.push('updated_at = datetime(\'now\')');
 
     const stmt = this.db.prepare(`
       UPDATE teams 
@@ -357,12 +457,19 @@ export class DatabaseManager {
         { name: 'searchableFields.skipFirstName', weight: 0.85 },
         { name: 'searchableFields.playerNames', weight: 0.8 },
         { name: 'searchableFields.homeClub', weight: 0.7 },
-        { name: 'searchableFields.allFields', weight: 0.5 }
+        { name: 'searchableFields.allFields', weight: 0.5 },
+        // Normalized keys to match punctuation-insensitive queries like "oreilly"
+        { name: 'searchableFields.teamNameNormalized', weight: 1.0 },
+        { name: 'searchableFields.skipLastNameNormalized', weight: 0.9 },
+        { name: 'searchableFields.skipFirstNameNormalized', weight: 0.85 },
+        { name: 'searchableFields.playerNamesNormalized', weight: 0.8 },
+        { name: 'searchableFields.homeClubNormalized', weight: 0.7 },
+        { name: 'searchableFields.allFieldsNormalized', weight: 0.5 }
       ],
-      threshold: 0.3, // Lower threshold = more strict matching
+      threshold: 0.3,
       includeScore: true,
       includeMatches: true,
-      minMatchCharLength: 2,
+      minMatchCharLength: 1,
       ignoreLocation: true,
       useExtendedSearch: false
     };
@@ -394,6 +501,8 @@ export class DatabaseManager {
   }
 
   private createSearchableFields(team: Team) {
+    const normalize = (value?: string) => (value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
     const skipName = this.getPlayerName(team, team.skipPosition);
     const skipParts = skipName ? skipName.split(' ') : [];
     const skipLastName = skipParts[skipParts.length - 1] || '';
@@ -421,22 +530,35 @@ export class DatabaseManager {
       skipFirstName,
       playerNames,
       homeClub: team.homeClub || '',
-      allFields
+      allFields,
+      // Normalized variants to improve fuzzy matching across punctuation and casing
+      teamNameNormalized: normalize(team.teamName),
+      skipLastNameNormalized: normalize(skipLastName),
+      skipFirstNameNormalized: normalize(skipFirstName),
+      playerNamesNormalized: normalize(playerNames),
+      homeClubNormalized: normalize(team.homeClub),
+      allFieldsNormalized: normalize(allFields)
     };
   }
 
   private determineMatchType(matches: readonly FuseResultMatch[], searchableFields: any): { matchType: SearchResult['matchType'], matchField: string } {
     // Find the highest priority match
     const matchPriorities = [
-      { key: 'teamName', type: 'teamName' as const, priority: 100 },
-      { key: 'skipLastName', type: 'skipLastName' as const, priority: 90 },
-      { key: 'skipFirstName', type: 'skipFirstName' as const, priority: 85 },
-      { key: 'playerNames', type: 'playerName' as const, priority: 80 },
-      { key: 'homeClub', type: 'homeClub' as const, priority: 70 },
-      { key: 'allFields', type: 'contains' as const, priority: 50 }
+      { key: 'teamName', type: 'teamName' as const },
+      { key: 'teamNameNormalized', type: 'teamName' as const },
+      { key: 'skipLastName', type: 'skipLastName' as const },
+      { key: 'skipLastNameNormalized', type: 'skipLastName' as const },
+      { key: 'skipFirstName', type: 'skipFirstName' as const },
+      { key: 'skipFirstNameNormalized', type: 'skipFirstName' as const },
+      { key: 'playerNames', type: 'playerName' as const },
+      { key: 'playerNamesNormalized', type: 'playerName' as const },
+      { key: 'homeClub', type: 'homeClub' as const },
+      { key: 'homeClubNormalized', type: 'homeClub' as const },
+      { key: 'allFields', type: 'contains' as const },
+      { key: 'allFieldsNormalized', type: 'contains' as const }
     ];
 
-    for (const { key, type, priority } of matchPriorities) {
+    for (const { key, type } of matchPriorities) {
       const match = matches.find(m => m.key === key);
       if (match) {
         return {
@@ -466,7 +588,7 @@ export class DatabaseManager {
   }
 
   // Bulk operations
-  bulkCreateTeams(format: string, data: string[][], contextName: string, contextType: 'league' | 'tournament', contextStartDate: string, contextEndDate: string): Team[] {
+  bulkCreateTeams(format: string, data: string[][], contextName: string, contextType: 'league' | 'tournament' | 'miscellaneous', contextStartDate: string, contextEndDate: string): Team[] {
     const teams: Team[] = [];
     
     // Get or create context
@@ -529,14 +651,16 @@ export const db = {
   // Proxy all methods to the instance
   getContexts: () => db.instance.getContexts(),
   getContextByName: (name: string) => db.instance.getContextByName(name),
-  createContext: (name: string, type: 'league' | 'tournament', startDate: string, endDate: string) => db.instance.createContext(name, type, startDate, endDate),
+  createContext: (name: string, type: 'league' | 'tournament' | 'miscellaneous', startDate?: string, endDate?: string) => db.instance.createContext(name, type, startDate, endDate),
+  updateContext: (currentName: string, updates: { name?: string; type?: 'league' | 'tournament' | 'miscellaneous'; startDate?: string; endDate?: string; }) => db.instance.updateContext(currentName, updates),
+  deleteContext: (name: string) => db.instance.deleteContext(name),
   getTeamsByContext: (contextName: string) => db.instance.getTeamsByContext(contextName),
   getTeam: (teamName: string, contextName: string) => db.instance.getTeam(teamName, contextName),
   createTeam: (request: TeamCreateRequest) => db.instance.createTeam(request),
   updateTeam: (teamName: string, contextName: string, updates: TeamUpdateRequest) => db.instance.updateTeam(teamName, contextName, updates),
   deleteTeam: (teamName: string, contextName: string) => db.instance.deleteTeam(teamName, contextName),
   searchTeams: (contextName: string, query: string) => db.instance.searchTeams(contextName, query),
-  bulkCreateTeams: (format: string, data: string[][], contextName: string, contextType: 'league' | 'tournament', contextStartDate: string, contextEndDate: string) => db.instance.bulkCreateTeams(format, data, contextName, contextType, contextStartDate, contextEndDate),
+  bulkCreateTeams: (format: string, data: string[][], contextName: string, contextType: 'league' | 'tournament' | 'miscellaneous', contextStartDate: string, contextEndDate: string) => db.instance.bulkCreateTeams(format, data, contextName, contextType, contextStartDate, contextEndDate),
   close: () => {
     if (dbInstance) {
       dbInstance.close();

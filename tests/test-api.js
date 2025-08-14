@@ -1,7 +1,13 @@
 // Simple test script to demonstrate the API functionality
 // Run with: node tests/test-api.js
 
-const BASE_URL = 'http://localhost:3000/api';
+import dotenv from 'dotenv';
+
+// Load environment variables
+dotenv.config();
+
+const PORT = process.env.PORT || 3000;
+const BASE_URL = `http://localhost:${PORT}/api`;
 
 async function testAPI() {
   console.log('🧪 Testing Curling Team API...\n');

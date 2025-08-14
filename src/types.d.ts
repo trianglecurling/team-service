@@ -23,9 +23,9 @@ export interface Team {
 export interface TeamCreateRequest {
   teamName?: string;
   contextName: string;
-  contextType: 'league' | 'tournament';
-  contextStartDate: string;
-  contextEndDate: string;
+  contextType: 'league' | 'tournament' | 'miscellaneous';
+  contextStartDate?: string;
+  contextEndDate?: string;
   lead?: string;
   second?: string;
   third?: string;
@@ -49,9 +49,9 @@ export interface TeamUpdateRequest {
 export interface Context {
   id: number;
   name: string;
-  type: 'league' | 'tournament';
-  startDate: string;
-  endDate: string;
+  type: 'league' | 'tournament' | 'miscellaneous';
+  startDate?: string;
+  endDate?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -65,9 +65,9 @@ export interface BulkTeamData {
   format: string;
   data: string[][];
   contextName: string;
-  contextType: 'league' | 'tournament';
-  contextStartDate: string;
-  contextEndDate: string;
+  contextType: 'league' | 'tournament' | 'miscellaneous';
+  contextStartDate?: string;
+  contextEndDate?: string;
 }
 
 export interface SearchResult {

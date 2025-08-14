@@ -19,13 +19,16 @@ export const startServer = () => {
       console.log(`Server is running on http://localhost:${PORT}`);
       console.log(`API endpoints:`);
       console.log(`  GET  /api/contexts - Get all contexts`);
+      console.log(`  POST /api/contexts - Create a new context`);
       console.log(`  GET  /api/teams/:contextName - Get teams for a context`);
+      console.log(`  PUT  /api/contexts/:contextName - Update a context`);
       console.log(`  GET  /api/teams/:contextName/:teamName - Get a specific team`);
       console.log(`  POST /api/teams - Create a new team`);
       console.log(`  PUT  /api/teams/:contextName/:teamName - Update a team`);
       console.log(`  DELETE /api/teams/:contextName/:teamName - Delete a team`);
       console.log(`  GET  /api/search?contextName=...&q=... - Search for teams`);
       console.log(`  POST /api/teams/bulk - Bulk create teams`);
+      console.log(`  DELETE /api/contexts/:contextName - Delete a context`);
       console.log(`  GET  /api/health - Health check`);
     });
 

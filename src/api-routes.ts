@@ -1,7 +1,7 @@
 // src/api-routes.ts
 import { Router, Request, Response } from "express";
 import { db } from "./database.js";
-import { TeamCreateRequest, TeamUpdateRequest, BulkTeamData, ApiResponse } from "./types.js";
+import { TeamCreateRequest, TeamUpdateRequest, BulkTeamData, ApiResponse, Context } from "./types.js";
 
 const router = Router();
 
@@ -36,6 +36,103 @@ router.get("/contexts", (req: Request, res: Response) => {
   try {
     const contexts = db.getContexts();
     sendResponse(res, contexts);
+  } catch (error) {
+    sendResponse(res, undefined, error instanceof Error ? error.message : 'Unknown error');
+  }
+});
+
+// POST /api/contexts - Create a context without any teams
+router.post("/contexts", (req: Request, res: Response) => {
+  try {
+    const {
+      // prefer simple names, but accept context* names for consistency with other endpoints
+      name,
+      type,
+      startDate,
+      endDate,
+      contextName,
+      contextType,
+      contextStartDate,
+      contextEndDate,
+    } = req.body || {};
+
+    const ctxName: string | undefined = name || contextName;
+    const ctxType: 'league' | 'tournament' | 'miscellaneous' | undefined = type || contextType;
+    const ctxStart: string | undefined = startDate || contextStartDate;
+    const ctxEnd: string | undefined = endDate || contextEndDate;
+
+    if (!ctxName) return sendResponse(res, undefined, 'Context name is required');
+    if (!ctxType || (ctxType !== 'league' && ctxType !== 'tournament' && ctxType !== 'miscellaneous')) {
+      return sendResponse(res, undefined, "Context type must be 'league', 'tournament', or 'miscellaneous'");
+    }
+    // Dates are optional. If both provided, validate order.
+    if (ctxStart && Number.isNaN(Date.parse(ctxStart))) {
+      return sendResponse(res, undefined, 'Invalid date format for startDate');
+    }
+    if (ctxEnd && Number.isNaN(Date.parse(ctxEnd))) {
+      return sendResponse(res, undefined, 'Invalid date format for endDate');
+    }
+    if (ctxStart && ctxEnd && Date.parse(ctxStart) > Date.parse(ctxEnd)) {
+      return sendResponse(res, undefined, 'startDate must be before or equal to endDate');
+    }
+
+    // dates optional; already validated if provided above
+
+    // Check duplicate
+    const existing = db.getContextByName(ctxName);
+    if (existing) {
+      return sendResponse(res, undefined, 'Context with this name already exists');
+    }
+
+    const created = db.createContext(ctxName, ctxType as 'league' | 'tournament' | 'miscellaneous', ctxStart ?? undefined, ctxEnd ?? undefined);
+    sendResponse(res, created, undefined, 'Context created successfully');
+  } catch (error) {
+    sendResponse(res, undefined, error instanceof Error ? error.message : 'Unknown error');
+  }
+});
+
+// PUT /api/contexts/:contextName - Update a context
+router.put("/contexts/:contextName", (req: Request, res: Response) => {
+  try {
+    const { contextName } = req.params;
+    const { name, type, startDate, endDate } = req.body || {};
+
+    if (type && type !== 'league' && type !== 'tournament' && type !== 'miscellaneous') {
+      return sendResponse(res, undefined, "Context type must be 'league', 'tournament', or 'miscellaneous'");
+    }
+    if (startDate && Number.isNaN(Date.parse(startDate))) {
+      return sendResponse(res, undefined, 'Invalid date format for startDate');
+    }
+    if (endDate && Number.isNaN(Date.parse(endDate))) {
+      return sendResponse(res, undefined, 'Invalid date format for endDate');
+    }
+    if (startDate && endDate && Date.parse(startDate) > Date.parse(endDate)) {
+      return sendResponse(res, undefined, 'startDate must be before or equal to endDate');
+    }
+
+    const updated = db.updateContext(contextName, { name, type: type as 'league' | 'tournament' | 'miscellaneous' | undefined, startDate, endDate });
+    sendResponse(res, updated, undefined, 'Context updated successfully');
+  } catch (error) {
+    sendResponse(res, undefined, error instanceof Error ? error.message : 'Unknown error');
+  }
+});
+
+// DELETE /api/contexts/:contextName - Delete a context (and its teams)
+router.delete("/contexts/:contextName", (req: Request, res: Response) => {
+  try {
+    const { contextName } = req.params;
+
+    const existing = db.getContextByName(contextName);
+    if (!existing) {
+      return sendResponse(res, undefined, 'Context not found');
+    }
+
+    const deleted = db.deleteContext(contextName);
+    if (!deleted) {
+      return sendResponse(res, undefined, 'Failed to delete context');
+    }
+
+    sendResponse(res, undefined, undefined, 'Context deleted successfully');
   } catch (error) {
     sendResponse(res, undefined, error instanceof Error ? error.message : 'Unknown error');
   }
@@ -86,8 +183,15 @@ router.post("/teams", (req: Request, res: Response) => {
       return sendResponse(res, undefined, 'Context type is required');
     }
     
-    if (!teamData.contextStartDate || !teamData.contextEndDate) {
-      return sendResponse(res, undefined, 'Context start and end dates are required');
+    // Dates optional for context; if provided in team creation, validate order
+    if (teamData.contextStartDate && Number.isNaN(Date.parse(teamData.contextStartDate))) {
+      return sendResponse(res, undefined, 'Invalid date format for contextStartDate');
+    }
+    if (teamData.contextEndDate && Number.isNaN(Date.parse(teamData.contextEndDate))) {
+      return sendResponse(res, undefined, 'Invalid date format for contextEndDate');
+    }
+    if (teamData.contextStartDate && teamData.contextEndDate && Date.parse(teamData.contextStartDate) > Date.parse(teamData.contextEndDate)) {
+      return sendResponse(res, undefined, 'contextStartDate must be before or equal to contextEndDate');
     }
     
     const team = db.createTeam(teamData);
@@ -164,8 +268,8 @@ router.post("/teams/bulk", (req: Request, res: Response) => {
       return sendResponse(res, undefined, 'Context name is required');
     }
     
-    if (!bulkData.contextType) {
-      return sendResponse(res, undefined, 'Context type is required');
+    if (!bulkData.contextType || (bulkData.contextType !== 'league' && bulkData.contextType !== 'tournament' && bulkData.contextType !== 'miscellaneous')) {
+      return sendResponse(res, undefined, "Context type must be 'league', 'tournament', or 'miscellaneous'");
     }
     
     if (!bulkData.contextStartDate || !bulkData.contextEndDate) {
@@ -176,7 +280,7 @@ router.post("/teams/bulk", (req: Request, res: Response) => {
       bulkData.format,
       bulkData.data,
       bulkData.contextName,
-      bulkData.contextType,
+      bulkData.contextType as 'league' | 'tournament' | 'miscellaneous',
       bulkData.contextStartDate,
       bulkData.contextEndDate
     );

@@ -71,6 +71,69 @@ Get all contexts (leagues and tournaments).
 }
 ```
 
+#### POST /api/contexts
+Create a new context without any teams.
+
+**Request Body**:
+```json
+{
+  "name": "Autumn League",
+  "type": "league",
+  "startDate": "2024-09-01T18:00:00Z",
+  "endDate": "2024-11-30T22:00:00Z"
+}
+```
+
+Notes:
+- `startDate` and `endDate` are optional; if both are provided, `startDate` must be <= `endDate`.
+- You may also use `contextName`, `contextType`, `contextStartDate`, `contextEndDate` as alternative keys.
+- `type` must be `league`, `tournament`, or `miscellaneous`.
+
+**Example**:
+```bash
+curl -X POST http://localhost:3000/api/contexts \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Autumn League",
+    "type": "league"
+  }'
+```
+
+#### PUT /api/contexts/:contextName
+Update context name, type, or dates.
+
+**Request Body** (all optional):
+```json
+{
+  "name": "Autumn League - Division A",
+  "type": "league",
+  "startDate": "2024-09-01T18:00:00Z",
+  "endDate": "2024-12-01T22:00:00Z"
+}
+```
+
+Rules:
+- `startDate` and `endDate` are optional; if both provided, `startDate` must be <= `endDate`.
+- If changing `name`, it must be unique.
+- `type` must be `league`, `tournament`, or `miscellaneous` if provided.
+
+**Example**:
+```bash
+curl -X PUT "http://localhost:3000/api/contexts/Autumn%20League" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "endDate": "2024-12-01T22:00:00Z"
+  }'
+```
+
+#### DELETE /api/contexts/:contextName
+Delete a context. Associated teams will also be deleted (cascade).
+
+**Example**:
+```bash
+curl -X DELETE "http://localhost:3000/api/contexts/Autumn%20League"
+```
+
 ### Teams
 
 #### GET /api/teams/:contextName
@@ -85,6 +148,10 @@ Get a specific team.
 
 #### POST /api/teams
 Create a new team.
+
+Notes:
+- `contextName` and `contextType` are required.
+- Context dates are optional in this request; if provided, both must form a valid range.
 
 **Request Body**:
 ```json
